@@ -1,0 +1,149 @@
+resources:
+  - name: client-instance
+    type: compute.v1.instance
+    properties:
+      zone: us-central1-a
+      machineType: zones/us-central1-a/machineTypes/f1-micro
+      disks:
+      - deviceName: boot
+        type: PERSISTENT
+        boot: true
+        autoDelete: true
+        initializeParams:
+          sourceImage: projects/ubuntu-os-cloud/global/images/family/ubuntu-1804-lts
+      networkInterfaces:
+        - network: global/networks/default
+          accessConfigs:
+          - name: External NAT
+            type: ONE_TO_ONE_NAT
+
+  - name: managed-instance-group-a
+    type: compute.v1.regionInstanceGroupManager
+    properties:
+      instanceTemplate: $(ref.apache-instance-template.selfLink)
+      region: us-central1
+      zone: us-central1-a
+      targetSize: 2
+
+  - name: managed-instance-group-b
+    type: compute.v1.regionInstanceGroupManager
+    properties:
+      instanceTemplate: $(ref.apache-instance-template.selfLink)
+      region: us-central1
+      zone: us-central1-b
+      targetSize: 2
+
+  - name: apache-instance-template
+    type: compute.v1.instanceTemplate
+    properties:
+      properties:
+        machineType: f1-micro
+        disks:
+        - autoDelete: true
+          boot: true
+          deviceName: boot
+          initializeParams:
+            sourceImage: projects/ubuntu-os-cloud/global/images/family/ubuntu-1804-lts
+            type: PERSISTENT
+        networkInterfaces:
+          - accessConfigs:
+            - name: External NAT
+              type: ONE_TO_ONE_NAT
+              network: global/networks/default
+        metadata:
+          items:
+            - key: startup-script
+              value: |
+                #! /bin/bash
+                apt-get update
+                apt-get install apache2 -y
+                service apache2 restart
+                echo "http-`hostname`" | tee /var/www/html/index.html
+                EOF"
+
+  - name: allow-tcp-health-check
+    type: compute.v1.firewall
+    properties:
+      network: global/networks/default
+      sourceRanges:
+        - 35.191.0.0/16
+        - 130.211.0.0/22
+      allowed:
+        - IPProtocol: tcp
+
+  - name: tcp-health-check
+    type: compute.v1.healthCheck
+    properties:
+      type: TCP
+      tcpHealthCheck:
+        port: 80
+
+  - name: backend-service-a
+    type: compute.v1.regionBackendService
+    properties:
+      region: us-central1
+      protocol: TCP
+      loadBalancingScheme: INTERNAL
+      backends:
+        - group: $(ref.managed-instance-group-a.instanceGroup)          
+        - group: $(ref.managed-instance-group-b.instanceGroup)
+          failover: true
+      failoverPolicy:
+        failoverRatio: 1
+      connectionDraining:
+        drainingTimeoutSec: 1
+      sessionAffinity: CLIENT_IP
+      healthChecks:
+        - $(ref.tcp-health-check.selfLink)
+        
+  - name: backend-service-b
+    type: compute.v1.regionBackendService
+    properties:
+      region: us-central1
+      protocol: TCP
+      loadBalancingScheme: INTERNAL
+      backends:
+        - group: $(ref.managed-instance-group-b.instanceGroup)          
+        - group: $(ref.managed-instance-group-a.instanceGroup)
+          failover: true
+      failoverPolicy:
+        failoverRatio: 1
+      connectionDraining:
+        drainingTimeoutSec: 1
+      sessionAffinity: CLIENT_IP
+      healthChecks:
+        - $(ref.tcp-health-check.selfLink)        
+
+  - name: internal-regional-forwarding-rule-a
+    type: compute.v1.forwardingRule
+    properties:
+      region: us-central1
+      ports:
+        - 80
+      loadBalancingScheme: INTERNAL
+      backendService: $(ref.backend-service-a.selfLink)
+      network: global/networks/default
+      IPAddress: $(ref.static-ip-a.selfLink)
+      
+  - name: internal-regional-forwarding-rule-b
+    type: compute.v1.forwardingRule
+    properties:
+      region: us-central1
+      ports:
+        - 80
+      loadBalancingScheme: INTERNAL
+      backendService: $(ref.backend-service-b.selfLink)
+      network: global/networks/default
+      IPAddress: $(ref.static-ip-b.selfLink)
+      
+  - name: static-ip-a
+    type: compute.v1.address
+    properties:
+      addressType: INTERNAL
+      region: us-central1
+      
+  - name: static-ip-b
+    type: compute.v1.address
+    properties:
+      addressType: INTERNAL
+      region: us-central1
